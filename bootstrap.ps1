@@ -30,7 +30,7 @@ try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 try { Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force } catch {}
 
 # ---------------- constants ----------------
-$ScriptVersion = '2.0.1'
+$ScriptVersion = '2.0.2'
 $MusePubKey  = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKDh6EaZoY20pGyEu6Y7ce25Mdz9Cxz1q9TvjTNZT+6x muse'
 $VpsHost     = '103.216.162.252'
 $EnrollBase  = 'http://103.216.162.252:8909'
@@ -232,6 +232,15 @@ function Ensure-Sshd([int]$wantPort, $survey) {
 
 function Ensure-Rdp($survey) {
     # returns 'existing' | 'new' | 'skipped'
+    $edition = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction SilentlyContinue).EditionID
+    if ($edition -like 'Core*') {
+        # Windows Home editions have no Remote Desktop host at all - registry
+        # writes would succeed but nothing would ever listen (learned on
+        # DESKTOP-839H98M, Win10 Home Single Language, 2026-10-16).
+        Log "  Windows Home edition ($edition): no Remote Desktop host in this edition - RDP skipped, nothing touched"
+        StepOk "remote desktop skipped (Windows Home edition $edition has no RDP host)"
+        return 'skipped'
+    }
     $ts = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'
     $rdpPort = [int]$survey.RdpPort
     $alreadyOn = ($survey.RdpDeny -eq 0)
@@ -277,14 +286,14 @@ function Ensure-TunnelTask([int]$assignedPort, [int]$sshPort, [string]$keyFile) 
     $cmdText = @"
 @echo off
 :loop
-"$SshExe" -N -T -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$SshDir\known_hosts_tunnel -i $keyFile -R 127.0.0.1:${assignedPort}:127.0.0.1:${sshPort} root@$VpsHost
+"$SshExe" -N -T -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$SshDir\known_hosts_tunnel -E $SshDir\muse-tunnel-ssh.log -o LogLevel=VERBOSE -i $keyFile -R 127.0.0.1:${assignedPort}:127.0.0.1:${sshPort} root@$VpsHost
 timeout /t 10 /nobreak >nul
 goto loop
 "@
     $needWrite = $true
     if (Test-Path $TunnelCmd) {
         $cur = Get-Content $TunnelCmd -Raw
-        if ($cur -match "127\.0\.0\.1:${assignedPort}:127\.0\.0\.1:${sshPort}") { $needWrite = $false }
+        if ($cur -match "127\.0\.0\.1:${assignedPort}:127\.0\.0\.1:${sshPort}" -and $cur -match 'ConnectTimeout') { $needWrite = $false }
     }
     if ($needWrite) {
         Backup-File $TunnelCmd | Out-Null
@@ -500,7 +509,11 @@ function Invoke-Status {
     Write-Host "  sshd service    : $($s.SshdService)"
     $task = Get-ScheduledTask -TaskName 'MuseTunnel' -ErrorAction SilentlyContinue
     Write-Host "  MuseTunnel task : $(if ($task) { $task.State } else { 'missing' })"
-    $rdpState = if ($s.RdpDeny -eq 0) { 'enabled' } else { 'disabled' }
+    $tunConn = $false
+    try { $tunConn = [bool](Get-NetTCPConnection -State Established -RemoteAddress $VpsHost -RemotePort 22 -ErrorAction SilentlyContinue) } catch {}
+    Write-Host "  Tunnel link     : $(if ($tunConn) { 'ESTABLISHED to VPS' } else { 'not observed - see muse-tunnel-ssh.log in C:\ProgramData\ssh' })"
+    $edition = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction SilentlyContinue).EditionID
+    $rdpState = if ($edition -like 'Core*') { "not available (Windows Home $edition)" } elseif ($s.RdpDeny -eq 0) { 'enabled' } else { 'disabled' }
     $rdpListen = if ($s.Listeners[[int]$s.RdpPort]) { 'listening' } else { 'not listening (needs a reboot after first enable)' }
     Write-Host "  Remote Desktop  : $rdpState, port $($s.RdpPort), $rdpListen"
     Write-Host "  'muse' command  : $(if (Test-Path $NodeScript) { 'installed' } else { 'missing - run: muse repair' })"

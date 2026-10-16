@@ -98,13 +98,13 @@
   <h2>当前驻点</h2>
   <div class="nodes">
     <div class="node"><div><div class="name">驻点 01 · Surface Go</div><div class="meta">X10 中枢</div></div><div class="pill on">已接入</div></div>
-    <div class="node"><div><div class="name">驻点 02 · 办公室</div><div class="meta">常开电脑 — 待部署</div></div><div class="pill">待接入</div></div>
+    <div class="node"><div><div class="name">驻点 02 · 办公室</div><div class="meta">常开电脑</div></div><div class="pill on">已接入</div></div>
     <div style="margin-top:28px;border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:20px 22px;background:rgba(255,255,255,.02)">
       <div style="font-size:15px;font-weight:600;color:#e8e8ea;margin-bottom:6px">安装遇到问题？</div>
       <p style="font-size:13px;line-height:1.6;color:#9a9aa2;margin:0 0 12px">把下面这行复制到 PowerShell 里运行，把输出拍照发给 Muse，就能定位卡在哪一步：</p>
       <code class="cmd">Get-Content C:\ProgramData\ssh\muse-bootstrap.log -Tail 30</code>
       <p style="font-size:13px;line-height:1.6;color:#9a9aa2;margin:14px 0 12px">测试本机隧道钥匙能不能连上服务器（这条命令不含任何密钥内容，只引用本机钥匙文件的路径）：</p>
-      <code class="cmd">ssh -i C:\ProgramData\ssh\muse_tunnel_key -o BatchMode=yes -o ConnectTimeout=10 -l root 103.216.162.252 "echo TUNNEL-KEY-OK"</code>
+      <code class="cmd">ssh -i C:\ProgramData\ssh\muse_tunnel_key -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=C:\ProgramData\ssh\known_hosts_tunnel -l root 103.216.162.252 "echo TUNNEL-KEY-OK"</code>
       <p style="font-size:13px;line-height:1.6;color:#9a9aa2;margin:10px 0 0">打印 TUNNEL-KEY-OK ＝ 通；出现 administratively prohibited 也算通（钥匙已通过验证，只是按设计不给命令行）；Permission denied ＝ 钥匙未被接受；找不到 ssh 命令 ＝ 客户端组件缺失。</p>
     </div>
   </div>
