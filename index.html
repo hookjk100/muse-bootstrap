@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Muse 驻点接入 · muse.naowall.com</title>
+<meta name="description" content="一行命令，把一台 Windows 变成 Muse 的长期驻点。">
+<style>
+  :root{
+    --bg:#0a0a0c; --panel:#121216; --line:#232329; --text:#f2f2f4; --dim:#9b9ba6;
+    --accent:#7dd3a8; --accent-dim:#1d2b24; --mono:ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);
+       font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+       -webkit-font-smoothing:antialiased;line-height:1.6}
+  .wrap{max-width:760px;margin:0 auto;padding:72px 24px 56px}
+  header{display:flex;justify-content:space-between;align-items:center;margin-bottom:88px}
+  .brand{font-family:var(--mono);font-size:13px;letter-spacing:.14em;color:var(--dim)}
+  .brand b{color:var(--text);font-weight:600}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--accent);margin-right:8px;
+       box-shadow:0 0 10px var(--accent);vertical-align:1px}
+  .tag{font-size:12px;color:var(--dim);border:1px solid var(--line);border-radius:99px;padding:4px 12px}
+  h1{font-size:clamp(34px,6vw,52px);font-weight:700;letter-spacing:-.02em;line-height:1.15;margin-bottom:18px}
+  h1 .thin{color:var(--dim);font-weight:400}
+  .sub{font-size:17px;color:var(--dim);max-width:34em;margin-bottom:44px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:22px 22px 18px;margin-bottom:14px}
+  .card label{display:block;font-size:11px;letter-spacing:.16em;color:var(--dim);margin-bottom:12px;text-transform:uppercase}
+  .cmdrow{display:flex;flex-direction:column;gap:12px}
+  code.cmd{font-family:var(--mono);font-size:12.5px;line-height:1.55;color:var(--accent);
+           background:#0c0f0d;border:1px solid var(--accent-dim);border-radius:10px;padding:13px 15px;
+           overflow-x:auto;white-space:nowrap;scrollbar-width:none}
+  code.cmd::-webkit-scrollbar{display:none}
+  button.copy{font:inherit;font-size:14px;font-weight:600;color:#0a0a0c;background:var(--accent);
+              border:none;border-radius:10px;padding:11px 22px;cursor:pointer;transition:transform .08s,opacity .2s}
+  button.copy:hover{opacity:.88}
+  button.copy:active{transform:scale(.96)}
+  .hint{font-size:13px;color:var(--dim);margin-top:13px}
+  .hint kbd{font-family:var(--mono);font-size:12px;background:#1b1b20;border:1px solid var(--line);
+            border-bottom-width:2px;border-radius:6px;padding:1px 6px;color:var(--text)}
+  .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:44px 0 14px}
+  .step{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:20px}
+  .step .n{font-family:var(--mono);font-size:12px;color:var(--accent);letter-spacing:.1em}
+  .step h3{font-size:15.5px;font-weight:600;margin:9px 0 5px}
+  .step p{font-size:13.5px;color:var(--dim)}
+  .sec{display:flex;flex-wrap:wrap;gap:8px 22px;border:1px dashed var(--line);border-radius:16px;
+       padding:16px 20px;font-size:13.5px;color:var(--dim);margin-bottom:52px}
+  .sec span::before{content:'✓';color:var(--accent);margin-right:7px;font-weight:700}
+  h2{font-size:13px;letter-spacing:.16em;color:var(--dim);text-transform:uppercase;margin-bottom:16px;font-weight:600}
+  .nodes{display:flex;flex-direction:column;gap:10px;margin-bottom:56px}
+  .node{display:flex;justify-content:space-between;align-items:center;background:var(--panel);
+        border:1px solid var(--line);border-radius:14px;padding:15px 20px}
+  .node .name{font-size:15px;font-weight:600}
+  .node .meta{font-size:13px;color:var(--dim);font-family:var(--mono)}
+  .pill{font-size:12px;border-radius:99px;padding:3px 11px;border:1px solid var(--line);color:var(--dim)}
+  .pill.on{color:var(--accent);border-color:var(--accent-dim);background:var(--accent-dim)}
+  footer{border-top:1px solid var(--line);padding-top:22px;font-size:12.5px;color:var(--dim);
+         display:flex;flex-wrap:wrap;gap:6px 26px;justify-content:space-between}
+  footer a{color:var(--dim);text-decoration:underline;text-underline-offset:3px}
+  footer a:hover{color:var(--text)}
+  @media (max-width:640px){ .steps{grid-template-columns:1fr} header{margin-bottom:56px} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand"><span class="dot"></span><b>MUSE</b>&nbsp;OUTPOST</div>
+    <div class="tag">驻点接入</div>
+  </header>
+
+  <h1>一行命令，<br><span class="thin">把这台电脑变成 Muse 的驻点。</span></h1>
+  <p class="sub">在新机器上打开 PowerShell，粘贴下面这行命令。剩下的事——装通道、配钥匙、开远程桌面——脚本自己做完，你只需把屏幕上的 6 位设备码发给 Muse，再重启一次。</p>
+
+  <div class="card">
+    <label>Bootstrap · PowerShell</label>
+    <div class="cmdrow">
+      <code class="cmd" id="cmd">irm https://cdn.jsdelivr.net/gh/hookjk100/muse-bootstrap@main/bootstrap.ps1 | iex</code>
+      <button class="copy" id="copyBtn" onclick="copyCmd()">复制</button>
+    </div>
+    <p class="hint">右键开始菜单 → <kbd>终端 (管理员)</kbd> 或 PowerShell，粘贴后回车；弹出 UAC 点「是」。</p>
+  </div>
+
+  <div class="steps">
+    <div class="step"><div class="n">STEP 1</div><h3>粘贴运行</h3><p>脚本自动装好安全通道，并为这台机器生成它专属的密钥——私钥只留在这台机器上。</p></div>
+    <div class="step"><div class="n">STEP 2</div><h3>发设备码</h3><p>屏幕会显示一个 6 位设备码，把它发给 Muse。Muse 认领后，这台机器自动领到自己的专属端口。</p></div>
+    <div class="step"><div class="n">STEP 3</div><h3>重启一次</h3><p>重启后远程桌面正式上线。从此这台机器就是 Muse 的一个长期驻点，随叫随到。</p></div>
+  </div>
+
+  <div class="sec">
+    <span>私钥在本机生成，从不上传</span>
+    <span>设备码 15 分钟过期、用一次作废</span>
+    <span>远程桌面只对 Tailscale 与局域网开放</span>
+    <span>每台机器独立密钥、独立端口，可单独撤销</span>
+  </div>
+
+  <h2>当前驻点</h2>
+  <div class="nodes">
+    <div class="node"><div><div class="name">驻点 01 · 家庭</div><div class="meta">Surface Go — 摄像头中枢</div></div><div class="pill on">已接入</div></div>
+    <div class="node"><div><div class="name">驻点 02 · 办公室</div><div class="meta">常开电脑 — 待部署</div></div><div class="pill">待接入</div></div>
+  </div>
+
+  <footer>
+    <div>页面与脚本均为公开内容，不含任何密钥。</div>
+    <div>主源 jsDelivr · <a href="https://raw.githubusercontent.com/hookjk100/muse-bootstrap/main/bootstrap.ps1">备用源 GitHub Raw</a></div>
+  </footer>
+
+</div>
+<script>
+function copyCmd(){
+  var t = document.getElementById('cmd').innerText.trim();
+  var b = document.getElementById('copyBtn');
+  function done(){ b.innerText = '已复制 ✓'; setTimeout(function(){ b.innerText = '复制'; }, 1800); }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(t).then(done).catch(function(){ fallback(); });
+  } else { fallback(); }
+  function fallback(){
+    var r = document.createRange(); r.selectNodeContents(document.getElementById('cmd'));
+    var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+    try { document.execCommand('copy'); done(); } catch(e) {}
+    s.removeAllRanges();
+  }
+}
+</script>
+</body>
+</html>
