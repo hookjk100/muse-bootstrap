@@ -99,6 +99,11 @@
   <div class="nodes">
     <div class="node"><div><div class="name">驻点 01 · Surface Go</div><div class="meta">X10 中枢</div></div><div class="pill on">已接入</div></div>
     <div class="node"><div><div class="name">驻点 02 · 办公室</div><div class="meta">常开电脑 — 待部署</div></div><div class="pill">待接入</div></div>
+    <div style="margin-top:28px;border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:20px 22px;background:rgba(255,255,255,.02)">
+      <div style="font-size:15px;font-weight:600;color:#e8e8ea;margin-bottom:6px">安装遇到问题？</div>
+      <p style="font-size:13px;line-height:1.6;color:#9a9aa2;margin:0 0 12px">把下面这行复制到 PowerShell 里运行，把输出拍照发给 Muse，就能定位卡在哪一步：</p>
+      <code class="cmd">Get-Content C:\ProgramData\ssh\muse-bootstrap.log -Tail 30</code>
+    </div>
   </div>
 
   <footer>
