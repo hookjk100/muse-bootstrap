@@ -30,7 +30,7 @@ try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 try { Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force } catch {}
 
 # ---------------- constants ----------------
-$ScriptVersion = '2.0.0'
+$ScriptVersion = '2.0.1'
 $MusePubKey  = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKDh6EaZoY20pGyEu6Y7ce25Mdz9Cxz1q9TvjTNZT+6x muse'
 $VpsHost     = '103.216.162.252'
 $EnrollBase  = 'http://103.216.162.252:8909'
@@ -384,15 +384,27 @@ function Invoke-Install {
     if ($adopt -and -not (Test-Path $keyFile)) { Warn "tunnel key file $keyFile not found - the existing tunnel may be broken; ask Muse to check" }
     if (-not (Test-Path $keyFile)) {
         try {
-            & "$env:WINDIR\System32\OpenSSH\ssh-keygen.exe" -t ed25519 -f $keyFile -N '' -C "muse-$env:COMPUTERNAME" | Out-Null
+            # Do NOT pass -N '' to ssh-keygen directly from PowerShell 5.1: it silently
+            # drops empty-string arguments to native commands, the argv shifts, and
+            # ssh-keygen dies with "Too many arguments" without making any key
+            # (found the hard way on DESKTOP-839H98M, 2026-10-16). Route via cmd.exe
+            # so the empty-passphrase quotes survive, then verify the key exists.
+            $keygenExe = "$env:WINDIR\System32\OpenSSH\ssh-keygen.exe"
+            $kgCmd = '"' + $keygenExe + '" -t ed25519 -f "' + $keyFile + '" -N "" -C "muse-' + $env:COMPUTERNAME + '"'
+            cmd.exe /c $kgCmd | Out-Null
+            if (-not (Test-Path "$keyFile.pub")) { throw 'ssh-keygen did not produce a keypair' }
             Add-Change "generated this machine's tunnel keypair ($keyFile; private key never leaves this box)"
         } catch { StepFail 'tunnel keypair' $_.Exception.Message }
     }
-    StepOk 'tunnel keypair present'
+    if (Test-Path "$keyFile.pub") { StepOk 'tunnel keypair present' } else { StepFail 'tunnel keypair' 'keypair files missing - enrollment will be skipped' }
 
     if (-not $adopt) {
         # ---- enroll + wait for claim ----
         $pubKeyLine = (Get-Content "$keyFile.pub" -Raw).Trim()
+        if ($pubKeyLine -notmatch '^ssh-ed25519 [A-Za-z0-9+/=]{40,}') {
+            StepFail 'enroll' 'tunnel public key unreadable - enrollment skipped (tell Muse)'
+            return
+        }
         $fingerprintWords = Get-Words $pubKeyLine
         $port = $null; $code = $null; $regen = 0
         while (-not $port -and $regen -lt 3) {
