@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
   muse-bootstrap.ps1 v2 - one-line bootstrap + node manager for a Muse outpost (Windows 10/11 Pro+)
-  Install (PowerShell, as admin):  irm https://muse.naowall.com/bootstrap.ps1 | iex
+  Install (PowerShell, as admin):  irm https://cdn.jsdelivr.net/gh/hookjk100/muse-bootstrap@main/bootstrap.ps1 | iex
   After install, from any cmd/PowerShell window:
     muse           -> management menu (status / repair / uninstall / recover / upgrade / help)
     muse -help     -> help text
@@ -32,11 +32,11 @@ try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 try { Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force } catch {}
 
 # ---------------- constants ----------------
-$ScriptVersion = '2.0.7'
+$ScriptVersion = '2.0.8'
 $MusePubKey  = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKDh6EaZoY20pGyEu6Y7ce25Mdz9Cxz1q9TvjTNZT+6x muse'
 $VpsHost     = '158.101.31.127'
 $EnrollBase  = 'http://158.101.31.127:8909'
-$SelfUrl     = 'https://muse.naowall.com/bootstrap.ps1'
+$SelfUrl     = 'https://cdn.jsdelivr.net/gh/hookjk100/muse-bootstrap@main/bootstrap.ps1'
 $RawUrl      = 'https://raw.githubusercontent.com/hookjk100/muse-bootstrap/main/bootstrap.ps1'
 $SshDir      = 'C:\ProgramData\ssh'
 $KeyPath     = Join-Path $SshDir 'muse_tunnel_key'
