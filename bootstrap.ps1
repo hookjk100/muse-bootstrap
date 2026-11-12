@@ -32,7 +32,7 @@ try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 try { Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force } catch {}
 
 # ---------------- constants ----------------
-$ScriptVersion = '2.0.6'
+$ScriptVersion = '2.0.7'
 $MusePubKey  = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKDh6EaZoY20pGyEu6Y7ce25Mdz9Cxz1q9TvjTNZT+6x muse'
 $VpsHost     = '158.101.31.127'
 $EnrollBase  = 'http://158.101.31.127:8909'
@@ -659,7 +659,7 @@ function Invoke-Upgrade {
         foreach ($e in $errors) { Write-Host "    $e" }
         return
     }
-    $m = Select-String -Path $tmp -Pattern "^\s*\$ScriptVersion\s*=\s*'([^']+)'" | Select-Object -First 1
+    $m = Select-String -Path $tmp -Pattern "ScriptVersion\s*=\s*'([^']+)'" | Select-Object -First 1
     $candidate = if ($m) { $m.Matches[0].Groups[1].Value } else { $null }
     if (-not $candidate) { Alert 'upgrade aborted - could not read the version of the downloaded file'; return }
     Log "  current version : $current"
