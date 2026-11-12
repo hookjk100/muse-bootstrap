@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
   muse-bootstrap.ps1 v2 - one-line bootstrap + node manager for a Muse outpost (Windows 10/11 Pro+)
-  Install (PowerShell, as admin):  irm https://cdn.jsdelivr.net/gh/hookjk100/muse-bootstrap@main/bootstrap.ps1 | iex
+  Install (PowerShell, as admin):  irm https://muse.naowall.com/bootstrap.ps1 | iex
   After install, from any cmd/PowerShell window:
     muse           -> management menu (status / repair / uninstall / recover / upgrade / help)
     muse -help     -> help text
@@ -32,11 +32,11 @@ try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 try { Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force } catch {}
 
 # ---------------- constants ----------------
-$ScriptVersion = '2.0.5'
+$ScriptVersion = '2.0.6'
 $MusePubKey  = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKDh6EaZoY20pGyEu6Y7ce25Mdz9Cxz1q9TvjTNZT+6x muse'
 $VpsHost     = '158.101.31.127'
 $EnrollBase  = 'http://158.101.31.127:8909'
-$SelfUrl     = 'https://cdn.jsdelivr.net/gh/hookjk100/muse-bootstrap@main/bootstrap.ps1'
+$SelfUrl     = 'https://muse.naowall.com/bootstrap.ps1'
 $RawUrl      = 'https://raw.githubusercontent.com/hookjk100/muse-bootstrap/main/bootstrap.ps1'
 $SshDir      = 'C:\ProgramData\ssh'
 $KeyPath     = Join-Path $SshDir 'muse_tunnel_key'
@@ -314,10 +314,11 @@ function Ensure-TunnelTask([int]$assignedPort, [int]$sshPort, [string]$keyFile) 
 timeout /t 10 /nobreak >nul
 goto loop
 "@
+    $tunnelTarget = "ubuntu@$VpsHost"
     $needWrite = $true
     if (Test-Path $TunnelCmd) {
         $cur = Get-Content $TunnelCmd -Raw
-        if ($cur -match "127\.0\.0\.1:${assignedPort}:127\.0\.0\.1:${sshPort}" -and $cur -match 'ConnectTimeout') { $needWrite = $false }
+        if (($cur -match "127\.0\.0\.1:${assignedPort}:127\.0\.0\.1:${sshPort}") -and ($cur -match 'ConnectTimeout') -and ($cur -match [regex]::Escape($tunnelTarget)) -and ($cur -match [regex]::Escape($keyFile))) { $needWrite = $false }
     }
     if ($needWrite) {
         Backup-File $TunnelCmd | Out-Null
@@ -335,7 +336,14 @@ goto loop
             Add-Change 'registered MuseTunnel scheduled task (SYSTEM, at startup)'
         }
         $t = Get-ScheduledTask -TaskName 'MuseTunnel'
-        if ($t.State -ne 'Running') { Start-ScheduledTask -TaskName 'MuseTunnel'; Add-Change 'started MuseTunnel task' }
+        if ($needWrite -and $t.State -eq 'Running') {
+            # Tunnel script changed while the task was running: the running
+            # cmd.exe keeps reading the old file, so restart to pick up the new one.
+            Stop-ScheduledTask -TaskName 'MuseTunnel' -ErrorAction SilentlyContinue | Out-Null
+            Start-Sleep -Seconds 2
+            Start-ScheduledTask -TaskName 'MuseTunnel'
+            Add-Change 'restarted MuseTunnel task (tunnel script changed)'
+        } elseif ($t.State -ne 'Running') { Start-ScheduledTask -TaskName 'MuseTunnel'; Add-Change 'started MuseTunnel task' }
         StepOk 'MuseTunnel task present and running'
         return $true
     } catch { StepFail 'MuseTunnel task' $_.Exception.Message; return $false }
