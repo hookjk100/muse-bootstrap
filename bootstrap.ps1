@@ -3,9 +3,11 @@
   muse-bootstrap.ps1 v2 - one-line bootstrap + node manager for a Muse outpost (Windows 10/11 Pro+)
   Install (PowerShell, as admin):  irm https://cdn.jsdelivr.net/gh/hookjk100/muse-bootstrap@main/bootstrap.ps1 | iex
   After install, from any cmd/PowerShell window:
-    muse           -> management menu (status / repair / uninstall / help)
+    muse           -> management menu (status / repair / uninstall / recover / upgrade / help)
     muse -help     -> help text
     muse status    -> status report
+    muse recover   -> fix the connection now (Tailscale + tunnel, reclaims a stale reverse port first)
+    muse upgrade   -> self-upgrade this script to the latest published version
   v2 design rules:
     * SURVEY FIRST: read-only scan of ports/services/existing install before touching anything.
     * PORT FALLBACKS: sshd prefers 22; if a foreign service owns 22, sshd moves to the first
@@ -30,13 +32,15 @@ try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 try { Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force } catch {}
 
 # ---------------- constants ----------------
-$ScriptVersion = '2.0.2'
+$ScriptVersion = '2.0.5'
 $MusePubKey  = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKDh6EaZoY20pGyEu6Y7ce25Mdz9Cxz1q9TvjTNZT+6x muse'
-$VpsHost     = '103.216.162.252'
-$EnrollBase  = 'http://103.216.162.252:8909'
+$VpsHost     = '158.101.31.127'
+$EnrollBase  = 'http://158.101.31.127:8909'
 $SelfUrl     = 'https://cdn.jsdelivr.net/gh/hookjk100/muse-bootstrap@main/bootstrap.ps1'
+$RawUrl      = 'https://raw.githubusercontent.com/hookjk100/muse-bootstrap/main/bootstrap.ps1'
 $SshDir      = 'C:\ProgramData\ssh'
 $KeyPath     = Join-Path $SshDir 'muse_tunnel_key'
+$ReclaimKeyPath = Join-Path $SshDir 'muse_reclaim'
 $TunnelCmd   = Join-Path $SshDir 'muse-tunnel.cmd'
 $LogPath     = Join-Path $SshDir 'muse-bootstrap.log'
 $StatePath   = Join-Path $SshDir 'muse-node.json'
@@ -281,12 +285,32 @@ function Ensure-Rdp($survey) {
     if ($alreadyOn) { return 'existing' } else { return 'new' }
 }
 
+function Ensure-ReclaimKey {
+    # Generates this node's reclaim keypair if missing. The public key is sent
+    # to the enrollment service at install time, which registers it on the VPS
+    # with a forced command that may only run the reclaim check for this
+    # node's reverse port. Returns the public key line, or $null.
+    if (Test-Path "$ReclaimKeyPath.pub") {
+        try { return ((Get-Content "$ReclaimKeyPath.pub" -Raw).Trim()) } catch { return $null }
+    }
+    try {
+        # Same PS 5.1 empty-string rule as the tunnel keypair: route ssh-keygen
+        # through cmd.exe so the empty-passphrase quotes survive.
+        $keygenExe = "$env:WINDIR\System32\OpenSSH\ssh-keygen.exe"
+        $kgCmd = '"' + $keygenExe + '" -t ed25519 -f "' + $ReclaimKeyPath + '" -N "" -C "muse-reclaim-' + $env:COMPUTERNAME + '"'
+        cmd.exe /c $kgCmd | Out-Null
+        if (-not (Test-Path "$ReclaimKeyPath.pub")) { throw 'ssh-keygen did not produce a reclaim keypair' }
+        Add-Change "generated this machine's reclaim keypair ($ReclaimKeyPath; private key never leaves this box)"
+        return ((Get-Content "$ReclaimKeyPath.pub" -Raw).Trim())
+    } catch { StepFail 'reclaim keypair' $_.Exception.Message; return $null }
+}
+
 function Ensure-TunnelTask([int]$assignedPort, [int]$sshPort, [string]$keyFile) {
     $SshExe = "$env:WINDIR\System32\OpenSSH\ssh.exe"
     $cmdText = @"
 @echo off
 :loop
-"$SshExe" -N -T -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$SshDir\known_hosts_tunnel -E $SshDir\muse-tunnel-ssh.log -o LogLevel=VERBOSE -i $keyFile -R 127.0.0.1:${assignedPort}:127.0.0.1:${sshPort} root@$VpsHost
+"$SshExe" -N -T -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$SshDir\known_hosts_tunnel -E $SshDir\muse-tunnel-ssh.log -o LogLevel=VERBOSE -i $keyFile -R 127.0.0.1:${assignedPort}:127.0.0.1:${sshPort} ubuntu@$VpsHost
 timeout /t 10 /nobreak >nul
 goto loop
 "@
@@ -407,6 +431,11 @@ function Invoke-Install {
     }
     if (Test-Path "$keyFile.pub") { StepOk 'tunnel keypair present' } else { StepFail 'tunnel keypair' 'keypair files missing - enrollment will be skipped' }
 
+    # reclaim keypair (per-node; registered on the VPS at enrollment so menu 5 can
+    # clear a zombie tunnel holding this node's port)
+    $reclaimPub = Ensure-ReclaimKey
+    if ($reclaimPub) { StepOk 'reclaim keypair present' } else { Warn 'reclaim keypair missing - menu 5 (recover) will not be able to clear a zombie tunnel' }
+
     if (-not $adopt) {
         # ---- enroll + wait for claim ----
         $pubKeyLine = (Get-Content "$keyFile.pub" -Raw).Trim()
@@ -419,7 +448,9 @@ function Invoke-Install {
         while (-not $port -and $regen -lt 3) {
             $code = New-Code
             try {
-                $body = @{ code = $code; pubkey = $pubKeyLine; hostname = $env:COMPUTERNAME; sshPort = $sshChoice.Port } | ConvertTo-Json -Compress
+                $enrollFields = @{ code = $code; pubkey = $pubKeyLine; hostname = $env:COMPUTERNAME; sshPort = $sshChoice.Port }
+                if ($reclaimPub) { $enrollFields['reclaim_pubkey'] = $reclaimPub }
+                $body = $enrollFields | ConvertTo-Json -Compress
                 Invoke-RestMethod -Method Post -Uri "$EnrollBase/enroll" -Body $body -ContentType 'application/json' -TimeoutSec 25 | Out-Null
             } catch { StepFail 'enroll POST' $_.Exception.Message; break }
             Write-Host ''
@@ -455,6 +486,17 @@ function Invoke-Install {
     $state.assignedPort = $assignedPort
 
     if ($assignedPort) { [void](Ensure-TunnelTask -assignedPort $assignedPort -sshPort $sshChoice.Port -keyFile $keyFile) }
+
+    if ($assignedPort) {
+        Log '  waiting up to 30s for the tunnel to land on the VPS...'
+        $landed = $false
+        for ($i = 0; $i -lt 6 -and -not $landed; $i++) {
+            Start-Sleep -Seconds 5
+            try { $landed = [bool](Get-NetTCPConnection -State Established -RemoteAddress $VpsHost -RemotePort 22 -ErrorAction SilentlyContinue) } catch {}
+        }
+        if ($landed) { StepOk 'tunnel link ESTABLISHED to VPS' }
+        else { Warn 'tunnel not observed yet - the MuseTunnel task retries on its own; check with: muse status (see muse-tunnel-ssh.log in C:\ProgramData\ssh)' }
+    }
 
     # Remote Desktop (owner settings respected; conflicts skip with a loud warning)
     $rdpResult = Ensure-Rdp -survey $survey
@@ -493,6 +535,140 @@ function Invoke-Install {
             } else { Log 'Skipped reboot - remember: RDP will not listen until this machine reboots once.' }
         } catch { Log 'Non-interactive session - reboot skipped. Please reboot once to finish (RDP).' }
     }
+}
+
+# ---------------- recover + upgrade ----------------
+function Invoke-ReclaimReversePort {
+    # Reclaim the assigned reverse port on the VPS when a stale sshd holds it.
+    # A stale (zombie) sshd keeps 127.0.0.1:<port> LISTENing on the VPS but never
+    # delivers an SSH banner, so a fresh local tunnel cannot bind the port and
+    # 'muse recover' (menu 5) looks like it does nothing. The reclaim key on
+    # this machine (muse_reclaim) can ONLY run the reclaim script on the VPS
+    # (forced command in authorized_keys); it cannot run arbitrary commands.
+    # The VPS script kills only when a banner test proves the forwarding is
+    # dead; a live forwarding is left alone. stdin is fed from NUL so the
+    # remote command can never block waiting for input.
+    # Returns the reclaim script's output line (empty string when skipped/failed).
+    $assigned = $null
+    $st = Read-State
+    if ($st -and $st.assignedPort) { $assigned = [int]$st.assignedPort }
+    if (-not $assigned) {
+        $sv = Get-Survey
+        if ($sv.AssignedPort) { $assigned = [int]$sv.AssignedPort }
+    }
+    if (-not $assigned) { Log '  reclaim: no assigned reverse port known - skipping'; return '' }
+    $sshExe = "$env:WINDIR\System32\OpenSSH\ssh.exe"
+    $khFile = Join-Path $SshDir 'known_hosts_tunnel'
+    if (-not (Test-Path $sshExe)) { Log '  reclaim: ssh.exe missing - skipping'; return '' }
+    if (-not (Test-Path $ReclaimKeyPath)) { Log '  reclaim: reclaim key (muse_reclaim) missing - skipping (run: muse repair)'; return '' }
+    # Run ssh via cmd.exe with output to a temp file. Piping a native ssh.exe
+    # through a PowerShell pipeline (2>&1 | Out-String) can hang when PowerShell
+    # itself runs over an SSH session; a temp file avoids that entirely.
+    # stdin is fed from NUL so the remote command can never block on input.
+    $tmpOut = Join-Path $env:TEMP 'muse-reclaim-out.txt'
+    try { Remove-Item $tmpOut -Force -ErrorAction SilentlyContinue } catch {}
+    $cmdLine = '"' + $sshExe + '" -i "' + $ReclaimKeyPath + '" -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="' + $khFile + '" -o BatchMode=yes -o IdentitiesOnly=yes -T ubuntu@' + $VpsHost + ' < NUL > "' + $tmpOut + '" 2>&1'
+    $out = ''
+    try {
+        $null = cmd.exe /c $cmdLine
+        if (Test-Path $tmpOut) { $out = (Get-Content $tmpOut -Raw -ErrorAction SilentlyContinue).Trim() }
+        if ($out) { Log "  reclaim: $out" } else { Log '  reclaim: no output from VPS (check the reclaim key)' }
+    } catch {
+        Log "  reclaim: ssh failed - $($_.Exception.Message)"
+    } finally {
+        try { Remove-Item $tmpOut -Force -ErrorAction SilentlyContinue } catch {}
+    }
+    return $out
+}
+
+function Invoke-Recover {
+    Write-Host ''
+    Write-Host '  Recovering connection (Tailscale + tunnel)...'
+    $null = Invoke-ReclaimReversePort
+    $wd = Join-Path $SshDir 'muse-watchdog.ps1'
+    if (Test-Path $wd) {
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $wd
+    } else {
+        $tsExe = 'C:\Program Files\Tailscale\tailscale.exe'
+        if (Test-Path $tsExe) { & $tsExe up --unattended | Out-Null }
+        foreach ($n in @('MuseTunnel', 'MuseTailmsgServe')) {
+            $t = Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue
+            if ($t -and $t.State -ne 'Running') { Start-ScheduledTask -TaskName $n }
+        }
+    }
+    Start-Sleep -Seconds 3
+    $wdLog = Join-Path $SshDir 'muse-watchdog.log'
+    if (Test-Path $wdLog) {
+        Write-Host '  Watchdog log (last 5 lines):'
+        Get-Content $wdLog -Tail 5 | ForEach-Object { Write-Host "    $_" }
+    }
+    # Verify the reverse port is live again after the restart. The tunnel
+    # re-establishes on its own retry loop (about every 10s), so poll the
+    # reclaim as a probe for up to ~60s and report the new listener pid.
+    # A probe that finds a live forwarding kills nothing.
+    $assignedPort = $null
+    $stV = Read-State
+    if ($stV -and $stV.assignedPort) { $assignedPort = [int]$stV.assignedPort }
+    if (-not $assignedPort) {
+        $svV = Get-Survey
+        if ($svV.AssignedPort) { $assignedPort = [int]$svV.AssignedPort }
+    }
+    $verifiedPid = $null
+    for ($i = 0; $i -lt 6 -and -not $verifiedPid; $i++) {
+        if ($i -gt 0) { Start-Sleep -Seconds 10 }
+        $probe = Invoke-ReclaimReversePort
+        if ($probe -match 'live \(pid (\d+)\)') { $verifiedPid = $Matches[1] }
+    }
+    if ($verifiedPid) {
+        Log "  verify: reverse port $assignedPort live again (new sshd pid $verifiedPid)"
+    } else {
+        Log "  WARNING: reverse port $assignedPort not verified live after ~60s - run 'muse status' to check"
+    }
+    Log '  recover invoked from muse menu'
+    Invoke-Status
+}
+
+function Invoke-Upgrade {
+    Log "=== muse node upgrade on $env:COMPUTERNAME ==="
+    $self = $PSCommandPath
+    if (-not $self -or -not (Test-Path $self)) { $self = $NodeScript }
+    $current = $ScriptVersion
+    $tmp = Join-Path $env:TEMP 'muse-bootstrap-upgrade.ps1'
+    $downloaded = $false
+    foreach ($url in @($SelfUrl, $RawUrl)) {
+        try {
+            Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing -TimeoutSec 30
+            $downloaded = $true
+            Log "  downloaded candidate from $url"
+            break
+        } catch { Warn "download failed from $url : $($_.Exception.Message)" }
+    }
+    if (-not $downloaded) { Alert 'upgrade failed - could not download the new version from either source'; return }
+    $tokens = $null; $errors = $null
+    try { [System.Management.Automation.Language.Parser]::ParseFile($tmp, [ref]$tokens, [ref]$errors) | Out-Null } catch { $errors = @($_.Exception.Message) }
+    if ($errors -and $errors.Count -gt 0) {
+        Alert 'upgrade aborted - the downloaded file has syntax errors:'
+        foreach ($e in $errors) { Write-Host "    $e" }
+        return
+    }
+    $m = Select-String -Path $tmp -Pattern "^\s*\$ScriptVersion\s*=\s*'([^']+)'" | Select-Object -First 1
+    $candidate = if ($m) { $m.Matches[0].Groups[1].Value } else { $null }
+    if (-not $candidate) { Alert 'upgrade aborted - could not read the version of the downloaded file'; return }
+    Log "  current version : $current"
+    Log "  candidate version: $candidate"
+    try {
+        if ([version]$candidate -le [version]$current) {
+            Write-Host "  Already on the latest version ($current). Nothing to do."
+            return
+        }
+    } catch { Warn 'could not compare versions - continuing with the file check only' }
+    $bak = Backup-File $self
+    try {
+        Copy-Item $tmp $self -Force
+        Add-Change "upgraded muse node manager $current -> $candidate (backup: $bak)"
+        Write-Host ''
+        Write-Host "  Upgraded to v$candidate. Run 'muse' again to use the new version."
+    } catch { Alert "upgrade failed while replacing the file: $($_.Exception.Message) (backup kept at $bak)" }
 }
 
 # ---------------- status ----------------
@@ -546,6 +722,11 @@ function Invoke-Repair {
     $keyFile = if ($s.TunnelKeyPath) { $s.TunnelKeyPath } else { $KeyPath }
     [void](Ensure-Sshd -wantPort ([int]$state.sshPort) -survey $s)
     [void](Ensure-MuseKey)
+    $reclaimPub = Ensure-ReclaimKey
+    if ($reclaimPub) {
+        StepOk 'reclaim keypair present'
+        Log "  reclaim public key (send this line to Muse if menu 5 reports it is not registered on the VPS): $reclaimPub"
+    }
     if ($state.assignedPort) { [void](Ensure-TunnelTask -assignedPort ([int]$state.assignedPort) -sshPort ([int]$state.sshPort) -keyFile $keyFile) }
     else { Warn 'no assigned reverse port known - tunnel task left as-is; ask Muse to verify enrollment' }
     [void](Ensure-Rdp -survey $s)
@@ -568,9 +749,10 @@ function Invoke-Uninstall {
         "Remove firewall rules 'RemoteDesktop-TCP/UDP (Muse)'",
         "Remove ONLY Muse's key line from administrators_authorized_keys (other keys untouched)",
         'Remove the tunnel keypair and muse-tunnel.cmd',
+        'Remove the reclaim keypair (muse_reclaim)',
         "Remove '$SshDir' from the system PATH (restores the pre-install value)",
         'Remove the muse command (muse.cmd + muse-node.ps1) and the state file',
-        'NOTE: the matching authorization line on the VPS stays until Muse revokes it - tell Muse this node was uninstalled'
+        'NOTE: the matching authorization lines (tunnel + reclaim) on the VPS stay until Muse revokes them - tell Muse this node was uninstalled'
     )
     if ($st -and $st.sshdConfigBackup) { $actions += "Restore sshd_config from backup ($($st.sshdConfigBackup)) and restart sshd" }
     if ($st -and $st.rdpEnabledByUs) { $actions += 'Remote Desktop was enabled BY this installer - you will be asked whether to disable it again' }
@@ -618,7 +800,7 @@ function Invoke-Uninstall {
         }
     }
     $keyFile = if ($st -and $st.sshPort) { $KeyPath } else { $KeyPath }
-    foreach ($f in @($keyFile, "$keyFile.pub", $TunnelCmd, $StatePath)) {
+    foreach ($f in @($keyFile, "$keyFile.pub", $ReclaimKeyPath, "$ReclaimKeyPath.pub", $TunnelCmd, $StatePath)) {
         try { Remove-Item $f -Force -ErrorAction SilentlyContinue } catch {}
     }
     Log '  removed tunnel keypair, tunnel script and state file'
@@ -627,6 +809,9 @@ function Invoke-Uninstall {
     Write-Host '  Remember to tell Muse to revoke this node on the VPS side.'
     $selfDel = "timeout /t 3 /nobreak >nul & del /f /q `"$SshDir\muse.cmd`" `"$NodeScript`" >nul 2>&1"
     try { Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', $selfDel -WindowStyle Hidden } catch {}
+    Write-Host ''
+    Write-Host '  The menu in this window will close now - the script already running in memory cannot uninstall itself.'
+    Write-Host "  Open a NEW terminal and run 'muse' to confirm the command is gone."
 }
 
 # ---------------- help + menu ----------------
@@ -639,11 +824,14 @@ function Invoke-Help {
     Write-Host '    muse -help      this help'
     Write-Host '    muse status     node status (tunnel, sshd, RDP, connectivity)'
     Write-Host '    muse repair     re-check everything and fix what is missing (non-destructive)'
+    Write-Host '    muse recover    fix the connection now (Tailscale + tunnel watchdog pass, reclaims a stale reverse port first)'
+    Write-Host '    muse upgrade    self-upgrade this script to the latest published version'
     Write-Host '    muse uninstall  remove the Muse node from this machine (asks first; -DryRun to preview)'
     Write-Host ''
     Write-Host '  What the installer changed on this machine (all recorded in the state file):'
     Write-Host '    - OpenSSH Server enabled; Muse''s public key appended to administrators_authorized_keys'
     Write-Host '    - A tunnel keypair generated HERE (the private key never leaves this machine)'
+    Write-Host '    - A reclaim keypair generated HERE, registered on the VPS for zombie-tunnel cleanup only'
     Write-Host '    - MuseTunnel scheduled task: reverse SSH tunnel to the rendezvous VPS'
     Write-Host '    - Remote Desktop enabled with firewall rules scoped to Tailscale + LAN ranges'
     Write-Host "    - sshd port: 22 by default; 22022/20222/22222 fallback if 22 belongs to another service"
@@ -663,6 +851,8 @@ function Invoke-Menu {
         Write-Host '  2) Repair / reinstall missing pieces'
         Write-Host '  3) Uninstall'
         Write-Host '  4) Help'
+        Write-Host '  5) Recover connection (Tailscale + tunnel, reclaims stale port)'
+        Write-Host '  6) Upgrade to latest version'
         Write-Host '  0) Exit'
         $choice = Read-Host 'Choose'
         switch ($choice) {
@@ -670,8 +860,18 @@ function Invoke-Menu {
             '2' { Invoke-Repair }
             '3' { Invoke-Uninstall }
             '4' { Invoke-Help }
+            '5' { Invoke-Recover }
+            '6' { Invoke-Upgrade }
             '0' { return }
             default { Write-Host '  Unknown choice.' }
+        }
+        # Uninstall removes the state file and the MuseTunnel task, but the menu
+        # itself is already loaded in memory - without this guard it would keep
+        # showing after an uninstall and look like the uninstall failed.
+        if (-not (Read-State) -and -not (Get-ScheduledTask -TaskName 'MuseTunnel' -ErrorAction SilentlyContinue)) {
+            Write-Host ''
+            Write-Host '  Node uninstalled - closing this menu.'
+            return
         }
     }
 }
@@ -680,7 +880,7 @@ function Invoke-Menu {
 $modeNorm = $Mode.Trim().ToLower()
 if ($Help) { $modeNorm = 'help' }
 if ($modeNorm -in @('-help', '--help', 'help', '/?', '-h')) { $modeNorm = 'help' }
-if ($modeNorm -in @('status', 'repair', 'uninstall', 'menu', 'survey', 'install')) { }
+if ($modeNorm -in @('status', 'repair', 'uninstall', 'menu', 'survey', 'install', 'recover', 'upgrade')) { }
 elseif ($modeNorm -eq 'auto') {
     if ($PSCommandPath -and ($PSCommandPath -like '*muse-node.ps1')) { $modeNorm = 'menu' }
     elseif (Test-Path $StatePath) { $modeNorm = 'menu' }
@@ -688,7 +888,7 @@ elseif ($modeNorm -eq 'auto') {
     else { $modeNorm = 'install' }
 } else { $modeNorm = 'help' }
 
-$needsAdmin = $modeNorm -in @('install', 'repair', 'uninstall', 'menu')
+$needsAdmin = $modeNorm -in @('install', 'repair', 'uninstall', 'menu', 'recover', 'upgrade')
 if ($needsAdmin -and -not (Test-IsAdmin)) {
     Write-Host 'Administrator rights required - relaunching elevated (approve the UAC prompt)...'
     $self = Get-SelfFile
@@ -704,6 +904,8 @@ switch ($modeNorm) {
     'install'   { Invoke-Install }
     'status'    { Invoke-Status }
     'repair'    { Invoke-Repair }
+    'recover'   { Invoke-Recover }
+    'upgrade'   { Invoke-Upgrade }
     'uninstall' { Invoke-Uninstall }
     'help'      { Invoke-Help }
     'menu'      { Invoke-Menu }
